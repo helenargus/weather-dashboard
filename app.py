@@ -126,15 +126,20 @@ st.markdown("""
 # HELPERS
 # ══════════════════════════════════════════════════════════════════════════════
 
+# Base Plotly layout shared by all charts.
+# Intentionally does NOT include 'xaxis' or 'yaxis' keys so that individual
+# charts can pass their own xaxis/yaxis dicts without hitting
+# "multiple values for keyword argument" TypeError.
 PLOTLY_LAYOUT = dict(
     paper_bgcolor="#0E1117",
     plot_bgcolor="#101820",
     font=dict(color="#8899AA", size=11, family="Courier New"),
-    xaxis=dict(gridcolor="#1E3045", zerolinecolor="#1E3045"),
-    yaxis=dict(gridcolor="#1E3045", zerolinecolor="#1E3045"),
     margin=dict(l=40, r=20, t=30, b=30),
-    legend=dict(bgcolor="#0E111700", font=dict(size=10)),
+    legend=dict(bgcolor="rgba(14,17,23,0)", font=dict(size=10)),
 )
+
+# Reusable axis style dicts – merge into update_layout calls as needed.
+_AXIS_STYLE = dict(gridcolor="#1E3045", zerolinecolor="#1E3045")
 
 
 def badge(signal: str) -> str:
@@ -267,9 +272,8 @@ if not score_ts.empty:
     fig.update_layout(
         **PLOTLY_LAYOUT,
         height=320,
-        yaxis_title="Composite Score",
-        xaxis_title="",
-        yaxis=dict(gridcolor="#1E3045", zerolinecolor="#1E3045", range=[-0.8, 0.8]),
+        xaxis={**_AXIS_STYLE, "title": ""},
+        yaxis={**_AXIS_STYLE, "title": "Composite Score", "range": [-0.8, 0.8]},
     )
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
@@ -341,6 +345,9 @@ if not ts_detail.empty:
         height=480,
         showlegend=False,
     )
+    # Apply shared axis style to all subplots
+    fig2.update_xaxes(**_AXIS_STYLE)
+    fig2.update_yaxes(**_AXIS_STYLE)
     fig2.update_annotations(font=dict(color="#8899AA", size=11))
     st.plotly_chart(fig2, use_container_width=True, config={"displayModeBar": False})
 
