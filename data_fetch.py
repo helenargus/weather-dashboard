@@ -86,7 +86,7 @@ def fetch_all_nodes() -> Dict[str, pd.DataFrame]:
     t0 = time.time()
 
     # Use a single connection pool for all requests
-    with httpx.Client(http2=True) as client:
+    with httpx.Client() as client:
         for node_id, meta in NODES.items():
             df = _fetch_node(node_id, meta, client)
             if df is not None:
