@@ -39,6 +39,35 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
+# ─── Auto-refresh sidebar ─────────────────────────────────────────────────────
+# Uses st.empty + HTML meta-refresh (no extra package needed).
+# The cache TTL is 1h, so refreshing more often than that just re-renders
+# from cache instantly; only the first render after TTL expiry re-fetches.
+with st.sidebar:
+    st.markdown("### ⚙️ Settings")
+    refresh_options = {
+        "Off":      0,
+        "5 min":    300,
+        "15 min":   900,
+        "30 min":   1800,
+        "60 min":   3600,
+    }
+    refresh_label = st.selectbox(
+        "Auto-refresh interval",
+        options=list(refresh_options.keys()),
+        index=2,   # default: 15 min
+    )
+    refresh_secs = refresh_options[refresh_label]
+    if refresh_secs:
+        # Inject a meta-refresh tag — works on any browser, no extra package
+        st.markdown(
+            f'<meta http-equiv="refresh" content="{refresh_secs}">',
+            unsafe_allow_html=True,
+        )
+        st.caption(f"Page will reload every {refresh_label}.")
+    else:
+        st.caption("Auto-refresh is off.")
+
 # ─── Dark-mode CSS ────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
@@ -284,9 +313,9 @@ if not score_ts.empty:
             hovertemplate=(f"<b>{country_flag(cc)}</b><br>"
                            f"%{{x|%d-%b %H:%M}}<br>Score: %{{y:.3f}}<extra></extra>"),
         ))
-    fig.add_hline(y=0,    line_dash="dot", line_color="#445566",   line_width=1)
-    fig.add_hline(y=0.2,  line_dash="dot", line_color="#00C85355", line_width=0.8)
-    fig.add_hline(y=-0.2, line_dash="dot", line_color="#FF4B4B55", line_width=0.8)
+    fig.add_hline(y=0,    line_dash="dot", line_color="#445566",            line_width=1)
+    fig.add_hline(y=0.2,  line_dash="dot", line_color="rgba(0,200,83,0.33)",  line_width=0.8)
+    fig.add_hline(y=-0.2, line_dash="dot", line_color="rgba(255,75,75,0.33)", line_width=0.8)
     fig.update_layout(
         **PLOTLY_LAYOUT, height=320,
         xaxis={**_AXIS_STYLE, "title": ""},
@@ -328,13 +357,13 @@ else:
         )
         fig2.add_trace(go.Scatter(
             x=ts_detail.index, y=ts_detail["wind_cf"].round(3),
-            fill="tozeroy", fillcolor="#00D4FF15",
+            fill="tozeroy", fillcolor="rgba(0,212,255,0.08)",
             line=dict(color=THEME_COLOR, width=2), name="Wind CF",
             hovertemplate="%{x|%d-%b %H:%M}<br>Wind CF: %{y:.2f}<extra></extra>",
         ), row=1, col=1)
         fig2.add_trace(go.Scatter(
             x=ts_detail.index, y=ts_detail["solar_cf"].round(3),
-            fill="tozeroy", fillcolor="#FFA72615",
+            fill="tozeroy", fillcolor="rgba(255,167,38,0.08)",
             line=dict(color="#FFA726", width=2), name="Solar CF",
             hovertemplate="%{x|%d-%b %H:%M}<br>Solar CF: %{y:.2f}<extra></extra>",
         ), row=2, col=1)
@@ -343,13 +372,13 @@ else:
             line=dict(color="#FF4B4B", width=2), name="Temp °C",
             hovertemplate="%{x|%d-%b %H:%M}<br>Temp: %{y:.1f}°C<extra></extra>",
         ), row=3, col=1)
-        fig2.add_hline(y=15, line_dash="dot", line_color="#44556688",
+        fig2.add_hline(y=15, line_dash="dot", line_color="rgba(68,85,102,0.53)",
                        line_width=1, row=3, col=1)
         country_ramps = [r for r in ramps
                          if r["country"] == selected_country and r["type"] == "Wind"]
         for r in country_ramps[:8]:
             fig2.add_vline(x=r["time"], line_dash="dash",
-                           line_color="#FFA72688", line_width=1, row=1, col=1)
+                           line_color="rgba(255,167,38,0.53)", line_width=1, row=1, col=1)
         fig2.update_layout(**PLOTLY_LAYOUT, height=480, showlegend=False)
         fig2.update_xaxes(**_AXIS_STYLE)
         fig2.update_yaxes(**_AXIS_STYLE)
