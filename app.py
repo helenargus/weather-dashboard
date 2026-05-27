@@ -1,9 +1,5 @@
 """
-app.py – European Power Market Weather Dashboard
-Entry point for Streamlit Community Cloud deployment.
-
-Run locally:
-    streamlit run app.py
+app.py – EU Power Market Weather Dashboard  (compact edition)
 """
 
 import streamlit as st
@@ -12,525 +8,377 @@ import numpy as np
 import plotly.graph_objects as go
 import plotly.express as px
 from plotly.subplots import make_subplots
+from streamlit_autorefresh import st_autorefresh
 
 from config import (
     APP_TITLE, APP_ICON, THEME_COLOR,
     BULL_COLOR, BEAR_COLOR, NEUTRAL_COLOR,
-    COUNTRY_LABELS, COUNTRY_GROUPS, NODES,
+    COUNTRY_LABELS, NODES,
 )
-from data_fetch import fetch_all_nodes, get_fetch_timestamp, combined_dataframe
+from data_fetch import fetch_all_nodes, get_fetch_timestamp
 from transformations import (
-    enrich_all,
-    country_summary,
-    country_level,
-    spread_signals,
-    intra_country_spreads,
-    detect_ramps,
-    generate_insights,
-    country_timeseries,
-    all_countries_score_ts,
+    enrich_all, country_summary, country_level,
+    spread_signals, intra_country_spreads,
+    detect_ramps, generate_insights,
+    country_timeseries, all_countries_score_ts,
 )
 
-# ─── Page config (must be first Streamlit call) ───────────────────────────────
+# ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="EU Power Weather Dashboard",
+    page_title="EU Power Dashboard",
     page_icon=APP_ICON,
     layout="wide",
-    initial_sidebar_state="collapsed",
+    initial_sidebar_state="expanded",
 )
 
-# ─── Auto-refresh sidebar ─────────────────────────────────────────────────────
-# Uses st.empty + HTML meta-refresh (no extra package needed).
-# The cache TTL is 1h, so refreshing more often than that just re-renders
-# from cache instantly; only the first render after TTL expiry re-fetches.
+# ── Sidebar: auto-refresh + controls ─────────────────────────────────────────
 with st.sidebar:
-    st.markdown("### ⚙️ Settings")
-    refresh_options = {
-        "Off":      0,
-        "5 min":    300,
-        "15 min":   900,
-        "30 min":   1800,
-        "60 min":   3600,
-    }
-    refresh_label = st.selectbox(
-        "Auto-refresh interval",
-        options=list(refresh_options.keys()),
-        index=2,   # default: 15 min
-    )
-    refresh_secs = refresh_options[refresh_label]
-    if refresh_secs:
-        # Inject a meta-refresh tag — works on any browser, no extra package
-        st.markdown(
-            f'<meta http-equiv="refresh" content="{refresh_secs}">',
-            unsafe_allow_html=True,
-        )
-        st.caption(f"Page will reload every {refresh_label}.")
-    else:
-        st.caption("Auto-refresh is off.")
+    st.markdown("### ⚡ EU Power Dashboard")
+    st.markdown("---")
 
-# ─── Dark-mode CSS ────────────────────────────────────────────────────────────
+    st.markdown("**🔄 Auto-Refresh**")
+    refresh_map = {"Off": 0, "5 min": 300_000, "15 min": 900_000,
+                   "30 min": 1_800_000, "60 min": 3_600_000}
+    refresh_choice = st.radio(
+        "Interval", list(refresh_map.keys()), index=2, label_visibility="collapsed"
+    )
+    refresh_ms = refresh_map[refresh_choice]
+    if refresh_ms:
+        count = st_autorefresh(interval=refresh_ms, key="autorefresh")
+        st.caption(f"Refreshes every {refresh_choice}. Run #{count}.")
+    else:
+        st.caption("Auto-refresh off.")
+        if st.button("🔃 Refresh now"):
+            st.cache_data.clear()
+            st.rerun()
+
+    st.markdown("---")
+    st.markdown("**📋 Data**")
+    st.caption("Source: Open-Meteo (free, no API key)")
+    st.caption("Cache: 1 h · 22 nodes · 13 countries")
+    st.caption("Horizon: 0–72 h UTC")
+
+# ── CSS ───────────────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
-  html, body, [class*="css"] {
-      background-color: #0E1117; color: #E0E0E0;
-      font-family: 'Courier New', monospace;
-  }
-  .main .block-container { padding-top: 1rem; max-width: 1400px; }
-  .dash-header {
-      background: linear-gradient(90deg,#0E1117 0%,#162032 50%,#0E1117 100%);
-      border-bottom: 1px solid #00D4FF33; padding: 0.6rem 1rem; margin-bottom:1rem;
-  }
-  .dash-title { font-size:1.6rem; font-weight:700; color:#00D4FF;
-      letter-spacing:2px; text-transform:uppercase; }
-  .dash-subtitle { font-size:0.75rem; color:#8899AA; letter-spacing:1px; }
-  .metric-card {
-      background:#162032; border:1px solid #1E3045; border-radius:6px;
-      padding:0.7rem 0.9rem; margin-bottom:0.5rem;
-  }
-  .metric-card:hover { border-color:#00D4FF55; }
-  .metric-label { font-size:0.65rem; color:#8899AA; text-transform:uppercase; letter-spacing:1px; }
-  .metric-value { font-size:1.4rem; font-weight:700; color:#E0E0E0; }
-  .metric-sub   { font-size:0.7rem; color:#8899AA; }
-  .badge-bull    { background:#00C85322; border:1px solid #00C853; color:#00C853;
-      padding:2px 10px; border-radius:3px; font-size:0.75rem; font-weight:700; }
-  .badge-bear    { background:#FF4B4B22; border:1px solid #FF4B4B; color:#FF4B4B;
-      padding:2px 10px; border-radius:3px; font-size:0.75rem; font-weight:700; }
-  .badge-neutral { background:#FFA72622; border:1px solid #FFA726; color:#FFA726;
-      padding:2px 10px; border-radius:3px; font-size:0.75rem; font-weight:700; }
-  .insight-panel {
-      background:#101820; border:1px solid #00D4FF33; border-left:3px solid #00D4FF;
-      border-radius:6px; padding:0.8rem 1rem; margin-bottom:0.5rem;
-  }
-  .insight-bull    { border-left-color:#00C853; }
-  .insight-bear    { border-left-color:#FF4B4B; }
-  .insight-neutral { border-left-color:#FFA726; }
-  .insight-text    { font-size:0.82rem; color:#CCDDEE; line-height:1.5; }
-  .insight-icon    { font-size:1.1rem; margin-right:6px; }
-  .section-header {
-      font-size:0.7rem; font-weight:700; color:#00D4FF; letter-spacing:2px;
-      text-transform:uppercase; border-bottom:1px solid #1E3045;
-      padding-bottom:4px; margin:1rem 0 0.6rem 0;
-  }
-  .ramp-row { background:#162032; border-radius:4px; padding:4px 8px; margin:2px 0;
-      font-size:0.78rem; border-left:3px solid #FFA726; }
-  .dash-footer {
-      text-align:center; font-size:0.65rem; color:#445566;
-      border-top:1px solid #1E3045; margin-top:2rem; padding-top:0.5rem; letter-spacing:1px;
-  }
-  .error-banner {
-      background:#1A0A0A; border:1px solid #FF4B4B55; border-left:4px solid #FF4B4B;
-      border-radius:6px; padding:1.2rem 1.5rem; margin:1rem 0;
-  }
-  .error-banner h3 { color:#FF4B4B; margin:0 0 0.5rem 0; font-size:1rem; }
-  .error-banner p  { color:#CCBBBB; margin:0; font-size:0.85rem; line-height:1.6; }
-  .warn-banner {
-      background:#1A1200; border:1px solid #FFA72655; border-left:4px solid #FFA726;
-      border-radius:6px; padding:0.8rem 1.2rem; margin:0.5rem 0;
-  }
-  .warn-banner p { color:#CCAA77; margin:0; font-size:0.82rem; }
-  #MainMenu { visibility:hidden; }
-  footer    { visibility:hidden; }
-  header    { visibility:hidden; }
+  html,body,[class*="css"]{background:#0E1117;color:#E0E0E0;font-family:'Courier New',monospace}
+  .main .block-container{padding-top:.5rem;padding-bottom:.5rem;max-width:1400px}
+  /* header strip */
+  .hdr{background:linear-gradient(90deg,#0E1117,#162032,#0E1117);
+       border-bottom:1px solid #00D4FF33;padding:.35rem 1rem;margin-bottom:.5rem;
+       display:flex;align-items:baseline;gap:1rem}
+  .hdr-title{font-size:1.1rem;font-weight:700;color:#00D4FF;letter-spacing:2px;text-transform:uppercase}
+  .hdr-sub{font-size:.65rem;color:#8899AA;letter-spacing:.5px}
+  /* section labels */
+  .sec{font-size:.6rem;font-weight:700;color:#00D4FF;letter-spacing:2px;text-transform:uppercase;
+       border-bottom:1px solid #1E3045;padding-bottom:2px;margin:.6rem 0 .35rem}
+  /* score badges */
+  .bull{color:#00C853;font-weight:700} .bear{color:#FF4B4B;font-weight:700}
+  .neu{color:#FFA726;font-weight:700}
+  /* compact insight row */
+  .ins{background:#101820;border-left:3px solid #00D4FF;border-radius:3px;
+       padding:.35rem .6rem;margin:.15rem 0;font-size:.75rem;color:#CCDDEE;line-height:1.4}
+  .ins-bull{border-left-color:#00C853} .ins-bear{border-left-color:#FF4B4B}
+  .ins-neu{border-left-color:#FFA726}
+  /* scoreboard table rows */
+  .sc-row{display:flex;align-items:center;gap:.5rem;padding:.2rem .4rem;
+          border-bottom:1px solid #1E3045;font-size:.75rem}
+  .sc-row:hover{background:#162032}
+  .sc-ctry{width:7rem;color:#AABBCC;font-size:.7rem}
+  .sc-score{width:3.5rem;font-weight:700;text-align:right}
+  .sc-bar-bg{flex:1;background:#1E3045;height:5px;border-radius:3px}
+  .sc-bar{height:5px;border-radius:3px}
+  .sc-meta{width:14rem;color:#8899AA;font-size:.65rem;text-align:right}
+  /* spread row */
+  .sp-row{display:flex;align-items:center;gap:.5rem;padding:.18rem .4rem;
+          border-bottom:1px solid #1E3045;font-size:.72rem}
+  .sp-pair{flex:1;color:#AABBCC} .sp-val{width:3rem;font-weight:700;text-align:right}
+  .sp-bar-bg{width:5rem;background:#1E3045;height:4px;border-radius:2px}
+  .sp-bar{height:4px;border-radius:2px}
+  /* ramp row */
+  .ramp{background:#162032;border-radius:3px;padding:2px 6px;margin:1px 0;
+        font-size:.7rem;border-left:2px solid #FFA726}
+  /* footer */
+  .ftr{text-align:center;font-size:.6rem;color:#445566;border-top:1px solid #1E3045;
+       margin-top:1rem;padding-top:.3rem}
+  /* error / warn */
+  .err{background:#1A0A0A;border-left:4px solid #FF4B4B;border-radius:4px;
+       padding:.8rem 1rem;margin:.5rem 0;font-size:.8rem;color:#CCBBBB}
+  .wrn{background:#1A1200;border-left:4px solid #FFA726;border-radius:4px;
+       padding:.5rem .8rem;margin:.3rem 0;font-size:.75rem;color:#CCAA77}
+  #MainMenu{visibility:hidden} footer{visibility:hidden} header{visibility:hidden}
+  /* tighten plotly chart padding */
+  .stPlotlyChart{margin-bottom:0!important;padding-bottom:0!important}
 </style>
 """, unsafe_allow_html=True)
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-# HELPERS
-# ══════════════════════════════════════════════════════════════════════════════
-
-# Base Plotly layout: intentionally NO 'xaxis'/'yaxis' keys so per-chart
-# overrides don't trigger "multiple values for keyword argument" TypeError.
-PLOTLY_LAYOUT = dict(
-    paper_bgcolor="#0E1117",
-    plot_bgcolor="#101820",
-    font=dict(color="#8899AA", size=11, family="Courier New"),
-    margin=dict(l=40, r=20, t=30, b=30),
-    legend=dict(bgcolor="rgba(14,17,23,0)", font=dict(size=10)),
+# ── Helpers ───────────────────────────────────────────────────────────────────
+PL = dict(
+    paper_bgcolor="#0E1117", plot_bgcolor="#101820",
+    font=dict(color="#8899AA", size=10, family="Courier New"),
+    margin=dict(l=30, r=10, t=18, b=18),
+    legend=dict(bgcolor="rgba(14,17,23,0)", font=dict(size=9)),
 )
-_AXIS_STYLE = dict(gridcolor="#1E3045", zerolinecolor="#1E3045")
+AX = dict(gridcolor="#1E3045", zerolinecolor="#1E3045")
 
+def sig_color(sig):
+    return BULL_COLOR if "BULL" in sig else BEAR_COLOR if "BEAR" in sig else NEUTRAL_COLOR
 
-def badge(signal: str) -> str:
-    cls = ("badge-bull"    if "BULL" in signal else
-           "badge-bear"    if "BEAR" in signal else "badge-neutral")
-    return f'<span class="{cls}">{signal}</span>'
+def sig_cls(sig):
+    return "bull" if "BULL" in sig else "bear" if "BEAR" in sig else "neu"
 
-
-def signal_color(signal: str) -> str:
-    return (BULL_COLOR    if "BULL" in signal else
-            BEAR_COLOR    if "BEAR" in signal else NEUTRAL_COLOR)
-
-
-def country_flag(code: str) -> str:
+def flag(code):
     return COUNTRY_LABELS.get(code, code)
 
+def badge_html(sig):
+    c = sig_color(sig); cl = sig_cls(sig)
+    return f'<span class="{cl}">{sig.split()[-1]}</span>'   # just BULLISH/BEARISH/NEUTRAL word
 
-# ══════════════════════════════════════════════════════════════════════════════
-# DATA LOAD
-# ══════════════════════════════════════════════════════════════════════════════
+# ── Data load ─────────────────────────────────────────────────────────────────
+with st.spinner("⚡ Loading…"):
+    raw      = fetch_all_nodes()
+    enriched = enrich_all(raw)
+    node_sum = country_summary(enriched)
+    ctry_df  = country_level(node_sum)
+    spreads  = spread_signals(ctry_df)
+    intra    = intra_country_spreads(node_sum)
+    ramps    = detect_ramps(enriched)
+    insights = generate_insights(ctry_df, spreads, ramps, node_sum)
+    score_ts = all_countries_score_ts(enriched)
+    fetch_ts = get_fetch_timestamp()
 
-with st.spinner("⚡ Loading European weather data…"):
-    raw_data  = fetch_all_nodes()
-    enriched  = enrich_all(raw_data)
-    node_sum  = country_summary(enriched)
-    ctry_df   = country_level(node_sum)
-    spreads   = spread_signals(ctry_df)
-    intra     = intra_country_spreads(node_sum)
-    ramps     = detect_ramps(enriched)
-    insights  = generate_insights(ctry_df, spreads, ramps, node_sum)
-    score_ts  = all_countries_score_ts(enriched)
-    fetch_ts  = get_fetch_timestamp()
+n_ok = len(raw)
+n_c  = len(ctry_df) if not ctry_df.empty else 0
+refresh_lbl = refresh_choice if refresh_ms else "off"
 
-# ── Counts for header display ─────────────────────────────────────────────────
-n_nodes_loaded   = len(raw_data)
-n_countries_loaded = len(ctry_df) if not ctry_df.empty else 0
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# HEADER
-# ══════════════════════════════════════════════════════════════════════════════
-
+# ── Header ────────────────────────────────────────────────────────────────────
 st.markdown(f"""
-<div class="dash-header">
-  <div class="dash-title">{APP_TITLE}</div>
-  <div class="dash-subtitle">
-    0–72h &nbsp;•&nbsp; {n_nodes_loaded}/{len(NODES)} Nodes &nbsp;•&nbsp;
-    {n_countries_loaded} Countries &nbsp;•&nbsp;
-    Open-Meteo API &nbsp;•&nbsp; Updated: {fetch_ts}
-  </div>
-</div>
-""", unsafe_allow_html=True)
+<div class="hdr">
+  <span class="hdr-title">⚡ EU Power Weather</span>
+  <span class="hdr-sub">
+    {n_ok}/{len(NODES)} nodes &nbsp;·&nbsp; {n_c} countries &nbsp;·&nbsp;
+    Updated {fetch_ts} &nbsp;·&nbsp; Refresh: {refresh_lbl}
+  </span>
+</div>""", unsafe_allow_html=True)
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-# EARLY-EXIT GUARD — show a clear error and stop if ALL data failed to load
-# ══════════════════════════════════════════════════════════════════════════════
-
+# ── Empty-data guard ──────────────────────────────────────────────────────────
 if node_sum.empty:
-    st.markdown("""
-    <div class="error-banner">
-      <h3>⚠️ Weather data unavailable</h3>
-      <p>
-        The Open-Meteo API did not return data for any node on this load.<br>
-        This usually means the free API is temporarily overloaded or rate-limiting
-        Streamlit Cloud's shared IP address.<br><br>
-        <strong>What to do:</strong><br>
-        • Wait 60–90 seconds and refresh the page — the cached result will be retried.<br>
-        • The 1-hour cache means this banner will only appear once per cache cycle.<br>
-        • If the problem persists, check
-          <a href="https://open-meteo.com" target="_blank" style="color:#FF8888;">open-meteo.com</a>
-          for service status.
-      </p>
-    </div>
-    """, unsafe_allow_html=True)
-    st.stop()   # halt rendering — nothing below will execute
+    st.markdown("""<div class="err">⚠️ <b>No data loaded.</b>
+    Open-Meteo API is rate-limiting this IP. Wait ~60 s and refresh,
+    or use the sidebar Refresh button.</div>""", unsafe_allow_html=True)
+    st.stop()
 
-
-# ── Partial-load warning (some nodes returned, not all) ──────────────────────
-if n_nodes_loaded < len(NODES):
-    missing = len(NODES) - n_nodes_loaded
-    st.markdown(f"""
-    <div class="warn-banner">
-      <p>⚠️ <strong>{missing} of {len(NODES)} nodes</strong> could not be fetched this cycle.
-      Signals are computed from available data only. Refresh in ~60s to retry.</p>
-    </div>
-    """, unsafe_allow_html=True)
-
+if n_ok < len(NODES):
+    st.markdown(f"""<div class="wrn">⚠️ {len(NODES)-n_ok} nodes unavailable —
+    signals use partial data.</div>""", unsafe_allow_html=True)
 
 # ══════════════════════════════════════════════════════════════════════════════
-# TRADE INSIGHT PANEL
+# ROW 1: Insights (compact scrollable) + 72h score chart
 # ══════════════════════════════════════════════════════════════════════════════
+col_ins, col_ts = st.columns([2, 3])
 
-st.markdown('<div class="section-header">🎯 Trade Insight Panel — Auto-Generated Signals</div>',
-            unsafe_allow_html=True)
-
-if insights:
-    cols_per_row = 2
-    for i in range(0, len(insights), cols_per_row):
-        row_insights = insights[i : i + cols_per_row]
-        cols = st.columns(cols_per_row)
-        for col, ins in zip(cols, row_insights):
-            color = ins["color"]
-            cls   = ("insight-bull"    if color == BULL_COLOR   else
-                     "insight-bear"    if color == BEAR_COLOR   else "insight-neutral")
-            with col:
-                st.markdown(f"""
-                <div class="insight-panel {cls}">
-                  <span class="insight-icon">{ins['icon']}</span>
-                  <span class="insight-text">{ins['text']}</span>
-                </div>""", unsafe_allow_html=True)
-else:
-    st.info("No significant signals detected at this time.")
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# COUNTRY SCOREBOARD
-# ══════════════════════════════════════════════════════════════════════════════
-
-st.markdown('<div class="section-header">🗺️ Country Scoreboard — 24h Outlook</div>',
-            unsafe_allow_html=True)
-
-if not ctry_df.empty:
-    n_cols      = 4
-    sorted_ctry = ctry_df.sort_values("score_24h").reset_index(drop=True)
-    cols        = st.columns(n_cols)
-    for idx, row in sorted_ctry.iterrows():
-        col = cols[idx % n_cols]
-        sc  = row["score_24h"]
-        bar_color = signal_color(row["signal"])
-        with col:
-            st.markdown(f"""
-            <div class="metric-card">
-              <div class="metric-label">{country_flag(row['country'])}</div>
-              <div class="metric-value" style="color:{bar_color};">{sc:+.2f}</div>
-              <div style="margin:4px 0;">{badge(row['signal'])}</div>
-              <div class="metric-sub">
-                🌬️ Wind CF {row['wind_24h']:.0%} &nbsp;
-                ☀️ Solar {row['solar_24h']:.0%}<br>
-                🌡️ Temp {row['temp_now']:.1f}°C &nbsp;
-                Demand {row['demand_24h']:+.2f}
-              </div>
-            </div>""", unsafe_allow_html=True)
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# 72h SCORE TIMESERIES
-# ══════════════════════════════════════════════════════════════════════════════
-
-st.markdown('<div class="section-header">📊 72h Score Evolution — All Countries</div>',
-            unsafe_allow_html=True)
-
-if not score_ts.empty:
-    ts_plot = score_ts.head(72)
-    fig     = go.Figure()
-    palette = px.colors.qualitative.Bold + px.colors.qualitative.Dark24
-    for i, cc in enumerate(ts_plot.columns):
-        fig.add_trace(go.Scatter(
-            x=ts_plot.index, y=ts_plot[cc].round(3), name=cc,
-            mode="lines",
-            line=dict(width=1.5, color=palette[i % len(palette)]),
-            hovertemplate=(f"<b>{country_flag(cc)}</b><br>"
-                           f"%{{x|%d-%b %H:%M}}<br>Score: %{{y:.3f}}<extra></extra>"),
-        ))
-    fig.add_hline(y=0,    line_dash="dot", line_color="#445566",            line_width=1)
-    fig.add_hline(y=0.2,  line_dash="dot", line_color="rgba(0,200,83,0.33)",  line_width=0.8)
-    fig.add_hline(y=-0.2, line_dash="dot", line_color="rgba(255,75,75,0.33)", line_width=0.8)
-    fig.update_layout(
-        **PLOTLY_LAYOUT, height=320,
-        xaxis={**_AXIS_STYLE, "title": ""},
-        yaxis={**_AXIS_STYLE, "title": "Composite Score", "range": [-0.8, 0.8]},
-    )
-    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-else:
-    st.info("Score timeseries not available.")
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# COUNTRY DETAIL DRILL-DOWN
-# ══════════════════════════════════════════════════════════════════════════════
-
-st.markdown('<div class="section-header">🔍 Country Detail — 0–72h Intraday Charts</div>',
-            unsafe_allow_html=True)
-
-# Guard: node_sum guaranteed non-empty past the early-exit above
-available_countries = sorted(node_sum["country"].unique())
-
-if not available_countries:
-    st.info("No country data available for drill-down.")
-else:
-    selected_country = st.selectbox(
-        "Select country for detail view:",
-        options=available_countries,
-        format_func=country_flag,
-        label_visibility="collapsed",
-    )
-
-    ts_detail  = country_timeseries(enriched, selected_country)
-    sub_nodes  = node_sum[node_sum["country"] == selected_country]
-
-    if not ts_detail.empty:
-        fig2 = make_subplots(
-            rows=3, cols=1, shared_xaxes=True,
-            subplot_titles=["Wind CF (0–1)", "Solar CF (0–1)", "Temperature (°C)"],
-            vertical_spacing=0.08,
+with col_ins:
+    st.markdown('<div class="sec">🎯 Trade Insights</div>', unsafe_allow_html=True)
+    for ins in insights[:8]:
+        c = ins["color"]
+        cl = "ins-bull" if c == BULL_COLOR else "ins-bear" if c == BEAR_COLOR else "ins-neu"
+        st.markdown(
+            f'<div class="ins {cl}">{ins["icon"]} {ins["text"]}</div>',
+            unsafe_allow_html=True,
         )
-        fig2.add_trace(go.Scatter(
-            x=ts_detail.index, y=ts_detail["wind_cf"].round(3),
-            fill="tozeroy", fillcolor="rgba(0,212,255,0.08)",
-            line=dict(color=THEME_COLOR, width=2), name="Wind CF",
-            hovertemplate="%{x|%d-%b %H:%M}<br>Wind CF: %{y:.2f}<extra></extra>",
-        ), row=1, col=1)
-        fig2.add_trace(go.Scatter(
-            x=ts_detail.index, y=ts_detail["solar_cf"].round(3),
-            fill="tozeroy", fillcolor="rgba(255,167,38,0.08)",
-            line=dict(color="#FFA726", width=2), name="Solar CF",
-            hovertemplate="%{x|%d-%b %H:%M}<br>Solar CF: %{y:.2f}<extra></extra>",
-        ), row=2, col=1)
-        fig2.add_trace(go.Scatter(
-            x=ts_detail.index, y=ts_detail["temperature_2m"].round(1),
-            line=dict(color="#FF4B4B", width=2), name="Temp °C",
-            hovertemplate="%{x|%d-%b %H:%M}<br>Temp: %{y:.1f}°C<extra></extra>",
-        ), row=3, col=1)
-        fig2.add_hline(y=15, line_dash="dot", line_color="rgba(68,85,102,0.53)",
-                       line_width=1, row=3, col=1)
-        country_ramps = [r for r in ramps
-                         if r["country"] == selected_country and r["type"] == "Wind"]
-        for r in country_ramps[:8]:
-            fig2.add_vline(x=r["time"], line_dash="dash",
-                           line_color="rgba(255,167,38,0.53)", line_width=1, row=1, col=1)
-        fig2.update_layout(**PLOTLY_LAYOUT, height=480, showlegend=False)
-        fig2.update_xaxes(**_AXIS_STYLE)
-        fig2.update_yaxes(**_AXIS_STYLE)
-        fig2.update_annotations(font=dict(color="#8899AA", size=11))
-        st.plotly_chart(fig2, use_container_width=True, config={"displayModeBar": False})
+
+with col_ts:
+    st.markdown('<div class="sec">📊 72h Composite Score</div>', unsafe_allow_html=True)
+    if not score_ts.empty:
+        fig = go.Figure()
+        pal = px.colors.qualitative.Bold + px.colors.qualitative.Dark24
+        for i, cc in enumerate(score_ts.head(72).columns):
+            fig.add_trace(go.Scatter(
+                x=score_ts.index, y=score_ts[cc].round(3), name=cc, mode="lines",
+                line=dict(width=1.5, color=pal[i % len(pal)]),
+                hovertemplate=f"<b>{flag(cc)}</b><br>%{{x|%d-%b %H:%M}}<br>%{{y:.3f}}<extra></extra>",
+            ))
+        fig.add_hline(y=0,    line_dash="dot", line_color="#445566", line_width=1)
+        fig.add_hline(y=0.2,  line_dash="dot", line_color="rgba(0,200,83,0.33)",  line_width=0.8)
+        fig.add_hline(y=-0.2, line_dash="dot", line_color="rgba(255,75,75,0.33)", line_width=0.8)
+        fig.update_layout(**PL, height=260,
+                          xaxis={**AX, "title": ""},
+                          yaxis={**AX, "title": "Score", "range": [-0.8, 0.8]})
+        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
     else:
-        st.info(f"No timeseries data available for {country_flag(selected_country)}.")
-
-    if not sub_nodes.empty:
-        st.markdown(f"**Node breakdown — {country_flag(selected_country)}**")
-        cols = st.columns(len(sub_nodes))
-        for col, (_, row) in zip(cols, sub_nodes.iterrows()):
-            with col:
-                sc        = row["score_24h"]
-                bar_color = signal_color(row["signal"])
-                st.markdown(f"""
-                <div class="metric-card">
-                  <div class="metric-label">{row['subregion']} · {row['label']}</div>
-                  <div class="metric-value" style="color:{bar_color};">{sc:+.2f}</div>
-                  <div style="margin:3px 0;">{badge(row['signal'])}</div>
-                  <div class="metric-sub">
-                    Wind {row['wind_24h']:.0%} · Solar {row['solar_24h']:.0%}<br>
-                    T={row['temp_now']:.1f}°C · HDD {row['hdd_24h']:.1f} · CDD {row['cdd_24h']:.1f}
-                  </div>
-                </div>""", unsafe_allow_html=True)
-
+        st.info("Timeseries unavailable.")
 
 # ══════════════════════════════════════════════════════════════════════════════
-# SPREAD SIGNALS
+# ROW 2: Country scoreboard (compact table) + Spreads
 # ══════════════════════════════════════════════════════════════════════════════
+col_sc, col_sp = st.columns([3, 2])
 
-st.markdown('<div class="section-header">↔️ Inter-Regional Spread Signals</div>',
-            unsafe_allow_html=True)
+with col_sc:
+    st.markdown('<div class="sec">🗺️ Country Scoreboard — 24h</div>', unsafe_allow_html=True)
+    if not ctry_df.empty:
+        rows_html = []
+        for _, row in ctry_df.sort_values("score_24h").iterrows():
+            sc   = row["score_24h"]
+            col_ = sig_color(row["signal"])
+            # bar width: map [-0.65, +0.65] → [0%, 100%], centre at 50%
+            bar_w   = min(max(int((sc + 0.65) / 1.3 * 100), 0), 100)
+            bar_left = 50  # centre line
+            # bar grows right from centre if bullish, left if bearish
+            if sc >= 0:
+                bar_style = f"width:{bar_w-50}%;margin-left:50%;background:{col_}"
+            else:
+                bar_style = f"width:{50-bar_w}%;margin-left:{bar_w}%;background:{col_}"
+            rows_html.append(f"""
+            <div class="sc-row">
+              <span class="sc-ctry">{flag(row['country'])}</span>
+              <span class="sc-score" style="color:{col_}">{sc:+.2f}</span>
+              <span class="{sig_cls(row['signal'])}" style="font-size:.65rem;width:4.5rem">
+                {row['signal'].split()[-1]}</span>
+              <div class="sc-bar-bg">
+                <div class="sc-bar" style="{bar_style}"></div>
+              </div>
+              <span class="sc-meta">
+                💨{row['wind_24h']:.0%} ☀️{row['solar_24h']:.0%} 🌡️{row['temp_now']:.0f}°C
+              </span>
+            </div>""")
+        st.markdown("".join(rows_html), unsafe_allow_html=True)
 
-col_sp1, col_sp2 = st.columns([3, 2])
+with col_sp:
+    st.markdown('<div class="sec">↔️ Spreads & Imbalances</div>', unsafe_allow_html=True)
 
-with col_sp1:
+    # Inter-country spreads
     if not spreads.empty:
         for _, row in spreads.iterrows():
-            sc        = row["spread"]
-            bar_color = signal_color(row["signal"])
-            bar_pct   = min(abs(sc) * 2, 1.0)
-            bar_w     = f"{bar_pct * 100:.0f}%"
-            bar_dir   = (f"{row['country_A']} stronger" if sc > 0
-                         else f"{row['country_B']} stronger")
+            sc   = row["spread"]
+            col_ = sig_color(row["signal"])
+            bw   = int(min(abs(sc) * 150, 100))
             st.markdown(f"""
-            <div class="metric-card" style="margin-bottom:6px;">
-              <div style="display:flex;justify-content:space-between;align-items:center;">
-                <span style="font-size:0.8rem;color:#CCDDEE;font-weight:600;">{row['pair']}</span>
-                <span style="font-size:0.8rem;color:{bar_color};font-weight:700;">{sc:+.3f}</span>
-                {badge(row['signal'])}
+            <div class="sp-row">
+              <span class="sp-pair">{row['pair']}</span>
+              <span class="sp-val" style="color:{col_}">{sc:+.2f}</span>
+              <div class="sp-bar-bg">
+                <div class="sp-bar" style="width:{bw}%;background:{col_}"></div>
               </div>
-              <div style="background:#1E3045;height:4px;border-radius:2px;margin-top:6px;">
-                <div style="background:{bar_color};width:{bar_w};height:4px;border-radius:2px;"></div>
-              </div>
-              <div class="metric-sub" style="margin-top:4px;">{bar_dir}</div>
             </div>""", unsafe_allow_html=True)
-    else:
-        st.markdown('<div class="metric-sub">Spread data unavailable.</div>',
-                    unsafe_allow_html=True)
 
-with col_sp2:
-    st.markdown("**Intra-Country Imbalances**")
+    # Intra-country imbalances (compact)
     if not intra.empty:
-        for _, row in intra.iterrows():
-            diff      = row["diff"]
-            bar_color = signal_color(row["signal"])
-            st.markdown(f"""
-            <div class="metric-card" style="margin-bottom:6px;">
-              <div style="font-size:0.75rem;color:#CCDDEE;">
-                <b>{country_flag(row['country'])}</b> · {row['spread']}
-              </div>
-              <div style="font-size:1rem;color:{bar_color};font-weight:700;">{diff:+.3f}</div>
-              <div style="margin-top:2px;">{badge(row['signal'])}</div>
-            </div>""", unsafe_allow_html=True)
-    else:
-        st.markdown('<div class="metric-sub">No intra-country spread data.</div>',
+        st.markdown('<div style="margin-top:.4rem;font-size:.65rem;color:#8899AA;">Intra-country</div>',
                     unsafe_allow_html=True)
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# RAMP / CLIFF EVENTS
-# ══════════════════════════════════════════════════════════════════════════════
-
-st.markdown('<div class="section-header">⚡ Ramp & Cliff Events (0–72h)</div>',
-            unsafe_allow_html=True)
-
-if ramps:
-    ramp_df            = pd.DataFrame(ramps).head(30)
-    ramp_df["time_str"] = ramp_df["time"].dt.strftime("%d-%b %H:%M UTC")
-    col_r1, col_r2, col_r3 = st.columns(3)
-
-    with col_r1:
-        st.markdown("**🌬️ Wind Ramps**")
-        for _, r in ramp_df[ramp_df["type"] == "Wind"].head(10).iterrows():
-            sev_color = BEAR_COLOR if r["severity"] == "HIGH" else NEUTRAL_COLOR
+        for _, row in intra.iterrows():
+            col_ = sig_color(row["signal"])
             st.markdown(f"""
-            <div class="ramp-row" style="border-left-color:{sev_color};">
-              <b>{r['country']}-{r['node']}</b> {r['direction']}<br>
-              <span style="color:#8899AA;">Δ{r['magnitude']:.0%} CF · {r['time_str']}</span>
+            <div class="sp-row">
+              <span class="sp-pair">{flag(row['country'])} {row['spread']}</span>
+              <span class="sp-val" style="color:{col_}">{row['diff']:+.2f}</span>
             </div>""", unsafe_allow_html=True)
 
-    with col_r2:
-        st.markdown("**☀️ Solar Ramps**")
-        for _, r in ramp_df[ramp_df["type"] == "Solar"].head(10).iterrows():
-            st.markdown(f"""
-            <div class="ramp-row" style="border-left-color:{NEUTRAL_COLOR};">
-              <b>{r['country']}-{r['node']}</b> {r['direction']}<br>
-              <span style="color:#8899AA;">Δ{r['magnitude']:.0%} CF · {r['time_str']}</span>
-            </div>""", unsafe_allow_html=True)
+# ══════════════════════════════════════════════════════════════════════════════
+# ROW 3: Country detail chart + Ramps (side by side)
+# ══════════════════════════════════════════════════════════════════════════════
+col_det, col_ramp = st.columns([3, 2])
 
-    with col_r3:
-        st.markdown("**🌡️ Temperature Ramps**")
-        for _, r in ramp_df[ramp_df["type"] == "Temp"].head(10).iterrows():
-            st.markdown(f"""
-            <div class="ramp-row" style="border-left-color:{BULL_COLOR};">
-              <b>{r['country']}-{r['node']}</b> {r['direction']}<br>
-              <span style="color:#8899AA;">Δ{r['magnitude']:.1f}°C · {r['time_str']}</span>
-            </div>""", unsafe_allow_html=True)
-else:
-    st.info("No significant ramp events detected in the 72h window.")
+with col_det:
+    st.markdown('<div class="sec">🔍 Country Detail — 0–72h</div>', unsafe_allow_html=True)
+    available = sorted(node_sum["country"].unique())
+    sel = st.selectbox("Country", available, format_func=flag, label_visibility="collapsed")
+    ts  = country_timeseries(enriched, sel)
 
+    if not ts.empty:
+        fig2 = make_subplots(
+            rows=3, cols=1, shared_xaxes=True,
+            subplot_titles=["Wind CF", "Solar CF", "Temp °C"],
+            vertical_spacing=0.06,
+        )
+        fig2.add_trace(go.Scatter(
+            x=ts.index, y=ts["wind_cf"].round(3), name="Wind",
+            fill="tozeroy", fillcolor="rgba(0,212,255,0.08)",
+            line=dict(color=THEME_COLOR, width=1.5),
+            hovertemplate="%{x|%d %H:%M} Wind:%{y:.2f}<extra></extra>",
+        ), row=1, col=1)
+        fig2.add_trace(go.Scatter(
+            x=ts.index, y=ts["solar_cf"].round(3), name="Solar",
+            fill="tozeroy", fillcolor="rgba(255,167,38,0.08)",
+            line=dict(color="#FFA726", width=1.5),
+            hovertemplate="%{x|%d %H:%M} Solar:%{y:.2f}<extra></extra>",
+        ), row=2, col=1)
+        fig2.add_trace(go.Scatter(
+            x=ts.index, y=ts["temperature_2m"].round(1), name="Temp",
+            line=dict(color="#FF4B4B", width=1.5),
+            hovertemplate="%{x|%d %H:%M} T:%{y:.1f}°C<extra></extra>",
+        ), row=3, col=1)
+        fig2.add_hline(y=15, line_dash="dot",
+                       line_color="rgba(68,85,102,0.53)", line_width=1, row=3, col=1)
+        for r in [r for r in ramps if r["country"] == sel and r["type"] == "Wind"][:5]:
+            fig2.add_vline(x=r["time"], line_dash="dash",
+                           line_color="rgba(255,167,38,0.53)", line_width=1, row=1, col=1)
+        fig2.update_layout(**PL, height=340, showlegend=False)
+        fig2.update_xaxes(**AX)
+        fig2.update_yaxes(**AX)
+        fig2.update_annotations(font=dict(color="#8899AA", size=9))
+        st.plotly_chart(fig2, use_container_width=True, config={"displayModeBar": False})
+
+        # Node mini-cards in one compact row
+        sub = node_sum[node_sum["country"] == sel]
+        if not sub.empty:
+            cols_n = st.columns(len(sub))
+            for c, (_, r) in zip(cols_n, sub.iterrows()):
+                col_ = sig_color(r["signal"])
+                with c:
+                    st.markdown(f"""
+                    <div style="background:#162032;border:1px solid #1E3045;border-radius:4px;
+                         padding:.3rem .5rem;font-size:.68rem">
+                      <div style="color:#8899AA">{r['subregion']} · {r['label']}</div>
+                      <div style="color:{col_};font-weight:700;font-size:.9rem">{r['score_24h']:+.2f}</div>
+                      <div style="color:#8899AA">💨{r['wind_24h']:.0%} ☀️{r['solar_24h']:.0%}
+                        🌡️{r['temp_now']:.0f}°C</div>
+                    </div>""", unsafe_allow_html=True)
+    else:
+        st.info("No data for this country.")
+
+with col_ramp:
+    st.markdown('<div class="sec">⚡ Ramp Events (0–72h)</div>', unsafe_allow_html=True)
+    if ramps:
+        rdf = pd.DataFrame(ramps)
+        rdf["ts"] = rdf["time"].dt.strftime("%d-%b %H:%M")
+
+        for rtype, icon, fmt in [
+            ("Wind",  "💨", lambda r: f"Δ{r['magnitude']:.0%}CF"),
+            ("Solar", "☀️", lambda r: f"Δ{r['magnitude']:.0%}CF"),
+            ("Temp",  "🌡️", lambda r: f"Δ{r['magnitude']:.1f}°C"),
+        ]:
+            subset = rdf[rdf["type"] == rtype].head(6)
+            if subset.empty:
+                continue
+            st.markdown(f"<div style='font-size:.65rem;color:#8899AA;margin:.3rem 0 .1rem'>"
+                        f"{icon} {rtype}</div>", unsafe_allow_html=True)
+            for _, r in subset.iterrows():
+                c = BEAR_COLOR if r["severity"] == "HIGH" else NEUTRAL_COLOR
+                st.markdown(
+                    f'<div class="ramp" style="border-left-color:{c}">'
+                    f'<b>{r["country"]}-{r["node"]}</b> {r["direction"]} '
+                    f'{fmt(r)} · {r["ts"]}</div>',
+                    unsafe_allow_html=True,
+                )
+    else:
+        st.info("No ramps detected.")
 
 # ══════════════════════════════════════════════════════════════════════════════
-# RAW DATA TABLE (collapsed expander — safe: node_sum non-empty past guard)
+# ROW 4: Full node table (collapsed)
 # ══════════════════════════════════════════════════════════════════════════════
-
-with st.expander("📋 Full Node Data Table (current hour snapshot)"):
-    snap = node_sum[[
-        "label", "country", "subregion",
-        "temp_now", "wind_ms_now", "wind_cf_now", "solar_cf_now",
-        "score_24h", "signal", "hdd_24h", "cdd_24h",
-    ]].copy()
-    snap.columns = [
-        "Node", "Country", "Subregion",
-        "Temp °C", "Wind m/s", "Wind CF", "Solar CF",
-        "Score 24h", "Signal", "HDD 24h", "CDD 24h",
-    ]
+with st.expander("📋 Full node snapshot"):
+    snap = node_sum[["label","country","subregion","temp_now","wind_ms_now",
+                      "wind_cf_now","solar_cf_now","score_24h","signal",
+                      "hdd_24h","cdd_24h"]].copy()
+    snap.columns = ["Node","Country","Subregion","T°C","Wind m/s","Wind CF",
+                    "Solar CF","Score 24h","Signal","HDD","CDD"]
     st.dataframe(snap.sort_values("Score 24h").reset_index(drop=True),
                  use_container_width=True, hide_index=True)
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-# FOOTER
-# ══════════════════════════════════════════════════════════════════════════════
-
+# ── Footer ────────────────────────────────────────────────────────────────────
 st.markdown(f"""
-<div class="dash-footer">
-  Data: <a href="https://open-meteo.com" target="_blank" style="color:#00D4FF;">
-  Open-Meteo API</a> (free, no key required) &nbsp;|&nbsp;
-  Last updated: {fetch_ts} &nbsp;|&nbsp; Cache TTL: 1h &nbsp;|&nbsp;
-  {n_nodes_loaded}/{len(NODES)} nodes · {n_countries_loaded} countries &nbsp;|&nbsp;
-  ⚡ EU Power Weather Dashboard — for informational purposes only
-</div>
-""", unsafe_allow_html=True)
+<div class="ftr">
+  <a href="https://open-meteo.com" target="_blank" style="color:#00D4FF">Open-Meteo API</a>
+  &nbsp;·&nbsp; {fetch_ts} &nbsp;·&nbsp; {n_ok}/{len(NODES)} nodes
+  &nbsp;·&nbsp; For informational purposes only
+</div>""", unsafe_allow_html=True)
